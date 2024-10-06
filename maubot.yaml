@@ -3,9 +3,9 @@ id: uk.tcpip.redactionregex
 version: 0.1.0
 license: GPL-3.0-or-later
 modules:
-    - redactionregex
+  - redactionregex
 main_class: RedactionRegexPlugin
 config: true
 extra_files:
-    - base-config.yaml
+  - base-config.yaml
 dependencies: []

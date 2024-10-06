@@ -1,6 +1,6 @@
 patterns:
-  - 'badword'
-  - '^spam message'
+  - "badword"
+  - "^spam message"
 actions:
   redact_message: false
   ban_user: false
