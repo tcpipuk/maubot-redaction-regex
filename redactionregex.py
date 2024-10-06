@@ -1,5 +1,5 @@
 """
-Regex Moderator Plugin for Maubot
+Regex Moderator Plugin for Maubot.
 
 This plugin monitors messages and takes actions when messages match configured regex patterns.
 """
@@ -10,7 +10,7 @@ from typing import List, Pattern, Type
 
 from maubot import MessageEvent, Plugin  # type: ignore
 from maubot.handlers import event
-from mautrix.errors import MBadJSON, MForbidden
+from mautrix.errors import MForbidden, MUnknown
 from mautrix.types import (
     EventType,
     MessageEventContent,
@@ -22,7 +22,7 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
 class Config(BaseProxyConfig):
     """
-    Configuration manager for the RegexModeratorPlugin.
+    Configuration manager for the RedactionRegexPlugin.
     """
 
     def do_update(self, helper: ConfigUpdateHelper) -> None:
@@ -35,14 +35,14 @@ class Config(BaseProxyConfig):
         helper.copy("actions")
 
 
-class RegexModeratorPlugin(Plugin):
+class RedactionRegexPlugin(Plugin):
     """
     Plugin to moderate messages based on regex patterns.
     """
 
-    patterns: List[Pattern] = []
+    patterns: List[Pattern[str]] = []
     actions = {}
-    report_to_room = ""
+    report_to_room: str = ""
     semaphore = Semaphore(1)
 
     @classmethod
@@ -56,36 +56,37 @@ class RegexModeratorPlugin(Plugin):
 
     async def start(self) -> None:
         """
-        Initialise plugin by loading config and compiling regex patterns.
+        Initialise the plugin by loading the config and compiling regex patterns.
         """
         await super().start()
-        try:
-            if not isinstance(self.config, Config):
-                self.log.error("Plugin not yet configured.")
-            else:
-                self.config.load_and_update()
-                self.actions = self.config["actions"]
-                self.report_to_room = str(self.actions.get("report_to_room", ""))
-                if self.report_to_room.startswith("#"):
-                    report_to_info = await self.client.resolve_room_alias(
-                        RoomAlias(self.report_to_room)
-                    )
-                    self.report_to_room = report_to_info.room_id
-                elif self.report_to_room and not self.report_to_room.startswith("!"):
-                    self.log.warning(
-                        "Invalid room ID or alias provided for report_to_room"
-                    )
+        if not isinstance(self.config, Config):
+            self.log.error("Plugin not yet configured.")
+            return
 
-                # Compile regex patterns
-                pattern_strings = self.config["patterns"]
-                self.patterns = [re.compile(p) for p in pattern_strings]
-                if not self.patterns:
-                    self.log.warning(
-                        "No patterns configured. The plugin will not match any messages."
-                    )
-                self.log.info("Loaded regexmoderator successfully")
-        except Exception as e:
-            self.log.error(f"Error during start: {e}")
+        self.config.load_and_update()
+        self.actions = self.config["actions"]
+        self.report_to_room = str(self.actions.get("report_to_room", ""))
+        if self.report_to_room.startswith("#"):
+            try:
+                report_room_info = await self.client.resolve_room_alias(
+                    RoomAlias(self.report_to_room)
+                )
+                self.report_to_room = report_room_info.room_id
+            except MUnknown:
+                self.log.warning(f"Failed to resolve room alias {self.report_to_room}")
+                self.report_to_room = ""
+        elif self.report_to_room and not self.report_to_room.startswith("!"):
+            self.log.warning("Invalid room ID or alias provided for report_to_room")
+            self.report_to_room = ""
+
+        # Compile regex patterns
+        pattern_strings = self.config["patterns"]
+        self.patterns = [re.compile(p) for p in pattern_strings]
+        if not self.patterns:
+            self.log.warning(
+                "No patterns configured. The plugin will not match any messages."
+            )
+        self.log.info("Loaded RedactionRegexPlugin successfully")
 
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message_event(self, evt: MessageEvent) -> None:
@@ -95,81 +96,75 @@ class RegexModeratorPlugin(Plugin):
         :param evt: The message event.
         """
         async with self.semaphore:
-            try:
-                content = evt.content
-                if not isinstance(content, MessageEventContent):
-                    return
+            content = evt.content
+            if not isinstance(content, MessageEventContent):
+                return
 
-                # Extract message bodies to check
-                bodies = []
-                if content.body:
-                    bodies.append(content.body)
-                if content.formatted_body:
-                    bodies.append(content.formatted_body)
+            # Extract message bodies to check
+            bodies = []
+            content_body = getattr(content, "body", None)
+            if content_body:
+                bodies.append(content_body)
+            content_formatted_body = getattr(content, "formatted_body", None)
+            if content_formatted_body:
+                bodies.append(content_formatted_body)
 
-                if not bodies:
-                    return
+            if not bodies:
+                return
 
-                # Check each body against all patterns
-                for body in bodies:
-                    for pattern in self.patterns:
-                        if pattern.search(body):
-                            await self.take_actions(evt, pattern)
-                            # Stop processing after first match and actions
-                            return
-            except Exception as e:
-                self.log.error(f"Error handling message event: {e}")
+            # Check each body against all patterns
+            for body in bodies:
+                for pattern in self.patterns:
+                    if pattern.search(body):
+                        await self.take_actions(evt, pattern)
+                        # Stop processing after first match and actions
+                        return
 
-    async def take_actions(self, evt: MessageEvent, pattern: Pattern) -> None:
+    async def take_actions(self, evt: MessageEvent, pattern: Pattern[str]) -> None:
         """
         Perform configured actions when a pattern matches.
 
         :param evt: The message event.
         :param pattern: The regex pattern that matched.
         """
-        try:
-            # Prepare a report message
-            report_message = (
-                f"Message from {evt.sender} in {evt.room_id} matched pattern '{pattern.pattern}':\n"
-                f"> {evt.content.body}"
-            )
+        # Prepare a report message
+        report_message = (
+            f"Message from {evt.sender} in {evt.room_id} matched pattern "
+            f"'{pattern.pattern}':\n> {evt.content.body}"
+        )
 
-            # Report to a specific room
-            if self.report_to_room:
-                try:
-                    await self.client.send_text(
-                        room_id=RoomID(self.report_to_room), text=report_message
-                    )
-                    self.log.info(f"Sent report to {RoomID(self.report_to_room)}")
-                except MBadJSON as e:
-                    self.log.warning(
-                        f"Failed to send message to {RoomID(self.report_to_room)}: {e}"
-                    )
+        # Report to a specific room
+        if self.report_to_room:
+            try:
+                await self.client.send_text(
+                    room_id=RoomID(self.report_to_room), text=report_message
+                )
+                self.log.info(f"Sent report to {self.report_to_room}")
+            except Exception as e:
+                self.log.warning(
+                    f"Failed to send message to {self.report_to_room}: {e}"
+                )
 
-            # Redact the message if redacting is enabled
-            if self.actions.get("redact_message", False):
-                try:
-                    await self.client.redact(
-                        room_id=evt.room_id,
-                        event_id=evt.event_id,
-                        reason="Inappropriate content",
-                    )
-                    self.log.info(f"Redacted message in {evt.room_id}")
-                except MForbidden:
-                    self.log.warning(f"Failed to redact message in {evt.room_id}")
+        # Redact the message if redacting is enabled
+        if self.actions.get("redact_message", False):
+            try:
+                await self.client.redact(
+                    room_id=evt.room_id,
+                    event_id=evt.event_id,
+                    reason="Inappropriate content",
+                )
+                self.log.info(f"Redacted message in {evt.room_id}")
+            except MForbidden:
+                self.log.warning(f"Failed to redact message in {evt.room_id}")
 
-            # Ban the user if banning is enabled
-            if self.actions.get("ban_user", False):
-                try:
-                    await self.client.ban_user(
-                        room_id=evt.room_id,
-                        user_id=evt.sender,
-                        reason="Inappropriate content",
-                    )
-                    self.log.info(f"Banned user {evt.sender} from {evt.room_id}")
-                except MForbidden:
-                    self.log.warning(
-                        f"Failed to ban user {evt.sender} from {evt.room_id}"
-                    )
-        except Exception as e:
-            self.log.error(f"Error taking actions: {e}")
+        # Ban the user if banning is enabled
+        if self.actions.get("ban_user", False):
+            try:
+                await self.client.ban_user(
+                    room_id=evt.room_id,
+                    user_id=evt.sender,
+                    reason="Inappropriate content",
+                )
+                self.log.info(f"Banned user {evt.sender} from {evt.room_id}")
+            except MForbidden:
+                self.log.warning(f"Failed to ban user {evt.sender} from {evt.room_id}")
