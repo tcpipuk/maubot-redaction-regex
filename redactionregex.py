@@ -2,6 +2,24 @@
 Regex Moderator Plugin for Maubot.
 
 This plugin monitors messages and takes actions when messages match configured regex patterns.
+
+Features:
+- Monitors messages in rooms the bot is a member of.
+- Supports user-defined regular expression patterns.
+- Performs configurable actions such as message redaction, user banning, and reporting events to a moderation room.
+- Compiles regex patterns at startup for efficient matching.
+
+Requirements:
+- Maubot framework.
+- Python standard library (`re` module).
+
+Usage:
+- Install and configure the plugin in Maubot.
+- Define regex patterns and actions in the configuration.
+- Add the bot to rooms to start monitoring messages.
+
+License:
+- This project is licensed under the GPLv3 License. See the LICENSE file for details.
 """
 
 import re
@@ -9,7 +27,7 @@ from asyncio import Semaphore
 from typing import List, Pattern, Type
 
 from maubot import MessageEvent, Plugin  # type: ignore
-from maubot.handlers import event
+from maubot.handlers import listener
 from mautrix.errors import MForbidden, MUnknown
 from mautrix.types import (
     EventType,
@@ -23,13 +41,18 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 class Config(BaseProxyConfig):
     """
     Configuration manager for the RedactionRegexPlugin.
+
+    Attributes:
+        patterns (List[str]): List of regex patterns to match against messages.
+        actions (dict): Dictionary of actions to perform on matching messages.
     """
 
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         """
         Update the configuration with new values.
 
-        :param helper: Helper object to copy configuration values.
+        Args:
+            helper (ConfigUpdateHelper): Helper object to copy configuration values.
         """
         helper.copy("patterns")
         helper.copy("actions")
@@ -38,6 +61,12 @@ class Config(BaseProxyConfig):
 class RedactionRegexPlugin(Plugin):
     """
     Plugin to moderate messages based on regex patterns.
+
+    Attributes:
+        patterns (List[Pattern[str]]): Compiled regex patterns.
+        actions (dict): Actions to perform when a pattern matches.
+        report_to_room (str): Room ID to report matching messages to.
+        semaphore (Semaphore): Semaphore to prevent concurrent handling of events.
     """
 
     patterns: List[Pattern[str]] = []
@@ -50,7 +79,8 @@ class RedactionRegexPlugin(Plugin):
         """
         Get the configuration class for the plugin.
 
-        :return: Configuration class.
+        Returns:
+            Type[BaseProxyConfig]: Configuration class.
         """
         return Config
 
@@ -88,12 +118,13 @@ class RedactionRegexPlugin(Plugin):
             )
         self.log.info("Loaded RedactionRegexPlugin successfully")
 
-    @event.on(EventType.ROOM_MESSAGE)
+    @listener.on(EventType.ROOM_MESSAGE)
     async def handle_message_event(self, evt: MessageEvent) -> None:
         """
         Handle message events and check against regex patterns.
 
-        :param evt: The message event.
+        Args:
+            evt (MessageEvent): The message event.
         """
         async with self.semaphore:
             content = evt.content
@@ -124,8 +155,9 @@ class RedactionRegexPlugin(Plugin):
         """
         Perform configured actions when a pattern matches.
 
-        :param evt: The message event.
-        :param pattern: The regex pattern that matched.
+        Args:
+            evt (MessageEvent): The message event.
+            pattern (Pattern[str]): The regex pattern that matched.
         """
         # Prepare a report message
         report_message = (
